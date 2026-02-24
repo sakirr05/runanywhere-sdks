@@ -1,4 +1,7 @@
 pluginManagement {
+    // Make shared build logic (Kotlin SDK) available as included build plugins
+    includeBuild("sdk/runanywhere-kotlin/build-logic")
+
     repositories {
         google {
             content {

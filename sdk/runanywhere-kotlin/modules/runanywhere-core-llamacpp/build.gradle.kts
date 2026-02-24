@@ -22,6 +22,7 @@ plugins {
     alias(libs.plugins.ktlint)
     `maven-publish`
     signing
+    id("runanywhere.native-library-download")
 }
 
 val testLocal: Boolean =
@@ -158,83 +159,20 @@ val nativeLibVersion: String =
         ?: project.findProperty("runanywhere.nativeLibVersion")?.toString()
         ?: (System.getenv("SDK_VERSION")?.removePrefix("v") ?: "0.1.5-SNAPSHOT")
 
-// Download LlamaCPP backend libs from GitHub releases (testLocal=false)
-tasks.register("downloadJniLibs") {
-    group = "runanywhere"
-    description = "Download LlamaCPP backend JNI libraries from GitHub releases"
-
-    onlyIf { !testLocal }
-
-    val outputDir = file("src/androidMain/jniLibs")
-    val tempDir = file("${layout.buildDirectory.get()}/jni-temp")
-
-    val releaseBaseUrl = "https://github.com/RunanywhereAI/runanywhere-sdks/releases/download/v$nativeLibVersion"
-    val targetAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-    val packageType = "RABackendLLAMACPP-android"
-
-    val llamacppLibs = setOf(
+// Configure LlamaCPP native library download with secure downloader
+nativeLibraryDownload {
+    version = nativeLibVersion
+    packageType = "RABackendLLAMACPP-android"
+    allowedLibraries = setOf(
         "librac_backend_llamacpp.so",
-        "librac_backend_llamacpp_jni.so",
+        "librac_backend_llamacpp_jni.so"
     )
-
-    outputs.dir(outputDir)
-
-    doLast {
-        val existingLibs = outputDir.walkTopDown().filter { it.extension == "so" }.count()
-        if (existingLibs > 0) {
-            logger.lifecycle("LlamaCPP: Skipping download, $existingLibs .so files already present")
-            return@doLast
-        }
-
-        outputDir.deleteRecursively()
-        tempDir.deleteRecursively()
-        outputDir.mkdirs()
-        tempDir.mkdirs()
-
-        logger.lifecycle("LlamaCPP Module: Downloading backend JNI libraries")
-
-        var totalDownloaded = 0
-
-        targetAbis.forEach { abi ->
-            val abiOutputDir = file("$outputDir/$abi")
-            abiOutputDir.mkdirs()
-
-            val packageName = "$packageType-$abi-v$nativeLibVersion.zip"
-            val zipUrl = "$releaseBaseUrl/$packageName"
-            val tempZip = file("$tempDir/$packageName")
-
-            logger.lifecycle("  Downloading: $packageName")
-
-            try {
-                ant.withGroovyBuilder {
-                    "get"("src" to zipUrl, "dest" to tempZip, "verbose" to false)
-                }
-
-                val extractDir = file("$tempDir/extracted-${packageName.replace(".zip", "")}")
-                extractDir.mkdirs()
-                ant.withGroovyBuilder {
-                    "unzip"("src" to tempZip, "dest" to extractDir)
-                }
-
-                extractDir
-                    .walkTopDown()
-                    .filter { it.extension == "so" && it.name in llamacppLibs }
-                    .forEach { soFile ->
-                        val targetFile = file("$abiOutputDir/${soFile.name}")
-                        soFile.copyTo(targetFile, overwrite = true)
-                        logger.lifecycle("    ${soFile.name}")
-                        totalDownloaded++
-                    }
-
-                tempZip.delete()
-            } catch (e: Exception) {
-                logger.warn("  Failed to download $packageName: ${e.message}")
-            }
-        }
-
-        tempDir.deleteRecursively()
-        logger.lifecycle("LlamaCPP: $totalDownloaded .so files downloaded")
-    }
+    targetAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    connectTimeout = 30_000  // 30 seconds
+    readTimeout = 120_000    // 2 minutes
+    enableChecksumVerification = true
+    retryAttempts = 3
+    testLocal = testLocal
 }
 
 tasks.matching { it.name.contains("merge") && it.name.contains("JniLibFolders") }.configureEach {
