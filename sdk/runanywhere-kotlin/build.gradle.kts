@@ -8,6 +8,7 @@ plugins {
     alias(libs.plugins.ktlint)
     id("maven-publish")
     signing
+    id("runanywhere.native-library-download")
 }
 
 // Detekt
@@ -389,143 +390,24 @@ tasks.register<Exec>("rebuildCommons") {
     }
 }
 
-// Download commons JNI libs from GitHub releases (testLocal=false).
-// Backend libs are downloaded by their own modules.
-tasks.register("downloadJniLibs") {
-    group = "runanywhere"
-    description = "Download commons JNI libraries from GitHub releases (when testLocal=false)"
-
-    // Only run when NOT using local libs
-    onlyIf { !testLocal }
-
-    val outputDir = file("src/androidMain/jniLibs")
-    val nativeLibVersionMarker = file("$outputDir/.native_lib_version")
-    val tempDir = file("${layout.buildDirectory.get()}/jni-temp")
-
-    val releaseBaseUrl = "https://github.com/RunanywhereAI/runanywhere-sdks/releases/download/v$nativeLibVersion"
-
-    val targetAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-
-    // Only download commons package — backend packages are handled by submodules
-    val packageType = "RACommons-android"
-
-    // Whitelist: only keep commons-owned .so files (the RACommons zip is a "fat" zip)
-    val commonsLibs = setOf(
+// Configure native library download with secure downloader
+nativeLibraryDownload {
+    version = nativeLibVersion
+    packageType = "RACommons-android"
+    allowedLibraries = setOf(
         "librac_commons.so",
         "librunanywhere_jni.so",
         "libc++_shared.so",
-        "libomp.so",
+        "libomp.so"
     )
-
-    outputs.dir(outputDir)
-
-    doLast {
-        if (testLocal) {
-            logger.lifecycle("Skipping JNI download: testLocal=true (using local libs)")
-            return@doLast
-        }
-
-        // Check if libs already exist (CI pre-populates build/jniLibs/).
-        // Guard against stale libs from a different native version.
-        val existingLibs = outputDir.walkTopDown().filter { it.extension == "so" }.count()
-        val existingVersion = nativeLibVersionMarker.takeIf { it.exists() }?.readText()?.trim()
-        if (existingLibs > 0 && existingVersion == nativeLibVersion) {
-            logger.lifecycle(
-                "Skipping JNI download: $existingLibs .so files already in $outputDir " +
-                    "(native version v$nativeLibVersion)",
-            )
-            return@doLast
-        }
-        if (existingLibs > 0 && existingVersion != nativeLibVersion) {
-            logger.lifecycle(
-                "Refreshing JNI libs: found $existingLibs existing .so files " +
-                    "with version '${existingVersion ?: "unknown"}', expected '$nativeLibVersion'",
-            )
-        }
-
-        // Clean output directories for a fresh download
-        outputDir.deleteRecursively()
-        tempDir.deleteRecursively()
-        outputDir.mkdirs()
-        tempDir.mkdirs()
-
-        logger.lifecycle("")
-        logger.lifecycle("═══════════════════════════════════════════════════════════════")
-        logger.lifecycle(" Downloading commons JNI libraries (testLocal=false)")
-        logger.lifecycle("═══════════════════════════════════════════════════════════════")
-        logger.lifecycle("")
-        logger.lifecycle("Native lib version: v$nativeLibVersion")
-        logger.lifecycle("Target ABIs: ${targetAbis.joinToString(", ")}")
-        logger.lifecycle("")
-
-        var totalDownloaded = 0
-
-        targetAbis.forEach { abi ->
-            val abiOutputDir = file("$outputDir/$abi")
-            abiOutputDir.mkdirs()
-
-            val packageName = "$packageType-$abi-v$nativeLibVersion.zip"
-            val zipUrl = "$releaseBaseUrl/$packageName"
-            val tempZip = file("$tempDir/$packageName")
-
-            logger.lifecycle("▶ Downloading: $packageName")
-
-            try {
-                ant.withGroovyBuilder {
-                    "get"("src" to zipUrl, "dest" to tempZip, "verbose" to false)
-                }
-
-                val extractDir = file("$tempDir/extracted-${packageName.replace(".zip", "")}")
-                extractDir.mkdirs()
-                ant.withGroovyBuilder {
-                    "unzip"("src" to tempZip, "dest" to extractDir)
-                }
-
-                // Only copy commons-owned .so files (whitelist filter)
-                extractDir
-                    .walkTopDown()
-                    .filter { it.extension == "so" && it.name in commonsLibs }
-                    .forEach { soFile ->
-                        val targetFile = file("$abiOutputDir/${soFile.name}")
-                        soFile.copyTo(targetFile, overwrite = true)
-                        logger.lifecycle("  ✓ ${soFile.name}")
-                        totalDownloaded++
-                    }
-
-                tempZip.delete()
-            } catch (e: Exception) {
-                logger.warn("  ⚠ Failed to download $packageName: ${e.message}")
-            }
-
-            logger.lifecycle("")
-        }
-
-        tempDir.deleteRecursively()
-
-        val totalLibs = outputDir.walkTopDown().filter { it.extension == "so" }.count()
-        val abiDirs = outputDir.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
-
-        logger.lifecycle("═══════════════════════════════════════════════════════════════")
-        logger.lifecycle("✓ Commons JNI libraries ready: $totalLibs .so files")
-        logger.lifecycle("  ABIs: ${abiDirs.joinToString(", ")}")
-        logger.lifecycle("  Output: $outputDir")
-        logger.lifecycle("═══════════════════════════════════════════════════════════════")
-
-        // Record native lib version to avoid reusing stale JNI binaries.
-        nativeLibVersionMarker.parentFile.mkdirs()
-        nativeLibVersionMarker.writeText(nativeLibVersion)
-
-        // List libraries per ABI
-        abiDirs.forEach { abi ->
-            val libs = file("$outputDir/$abi").listFiles()?.filter { it.extension == "so" }?.map { it.name } ?: emptyList()
-            logger.lifecycle("$abi (${libs.size} libs):")
-            libs.sorted().forEach { lib ->
-                val size = file("$outputDir/$abi/$lib").length() / 1024
-                logger.lifecycle("  - $lib (${size}KB)")
-            }
-        }
-    }
+    targetAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    connectTimeout = 30_000  // 30 seconds
+    readTimeout = 120_000    // 2 minutes
+    enableChecksumVerification = true
+    retryAttempts = 3
+    testLocal = testLocal
 }
+
 
 // Ensure JNI libs are available before Android build
 tasks.matching { it.name.contains("merge") && it.name.contains("JniLibFolders") }.configureEach {

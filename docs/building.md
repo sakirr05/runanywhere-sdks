@@ -80,11 +80,36 @@ Native libraries can be sourced in two ways, controlled by `gradle.properties`:
 
 ### Remote mode (default for CI)
 
-Downloads pre-built `.so` files from GitHub releases. No NDK required.
+Downloads pre-built `.so` files from GitHub releases with **timeouts and SHA256 verification**. No NDK required.
 
 ```properties
 runanywhere.testLocal=false
 ```
+
+When `runanywhere.testLocal=false`, the Kotlin SDK uses a shared Gradle plugin to:
+
+- Enforce **30s connect** and **2min read** timeouts per download.
+- Verify each ZIP against its published **`.sha256` checksum**; mismatches fail the build.
+- Download per‑ABI artifacts such as:
+  - `RACommons-android-arm64-v8a-v{ver}.zip`
+  - `RABackendLLAMACPP-android-arm64-v8a-v{ver}.zip`
+  - `RABackendONNX-android-arm64-v8a-v{ver}.zip`
+
+If downloads fail or hang, you can debug just the JNI steps:
+
+```bash
+./gradlew :runanywhere-kotlin:downloadJniLibs --info
+./gradlew :runanywhere-kotlin:modules:runanywhere-core-llamacpp:downloadJniLibs --info
+./gradlew :runanywhere-kotlin:modules:runanywhere-core-onnx:downloadJniLibs --info
+```
+
+On a machine with release assets downloaded, you can manually verify checksums:
+
+```bash
+shasum -a 256 -c *.sha256
+```
+
+Make sure `runanywhere.nativeLibVersion` (or `SDK_VERSION`) matches an existing GitHub release tag.
 
 ### Local mode (for C++ development)
 
